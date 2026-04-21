@@ -35,9 +35,30 @@ def show_structure(mol, size=300, indexes=False):
     show_image(d.GetDrawingText())
 
 
-def to_2d(mol, keeph=False):
-    if keeph:
-        mol = Chem.AddHs(mol)
+def to_2d(mol: Chem.Mol,
+          keeph: bool = False,
+          idx: int | None = None) -> Chem.Mol:
+    """
+    Return a modified copy of mol with 2D coordinates added, and depending on
+    flags, hydrogens removed and indices added as atomNote properties. The notes
+    have the original atom indices, before deleting the hydrogens.
+
+    :param keeph: if False, remove the hydrogen atoms
+    :param idx: if not None, set the atomNote property of each atom to its atom
+                index plus the value of `idx`. This is normally 0 or 1,
+                depending on which numbering convention is desired.
+    """
+    mol = Chem.Mol(mol)
+    if idx is not None:
+        for atom in mol.GetAtoms():
+            atom.SetProp('atomNote', str(atom.GetIdx() + idx))
+    if not keeph:
+        mol = Chem.RemoveHs(mol)
+        for bond in mol.GetBonds():
+            bond.SetBondDir(Chem.BondDir.NONE)
+        Chem.AssignStereochemistryFrom3D(mol)
+        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+
     rdDepictor.Compute2DCoords(mol)
     return mol
 
@@ -50,12 +71,30 @@ def parse_args():
         '-n',
         default=1,
         help="index of structure to display. May be a range ('-n 1-4')")
-    parser.add_argument('-all',
+    parser.add_argument('--all',
+                        '-a',
                         action='store_true',
                         help='show all structures in the file')
-    parser.add_argument('-idx', action='store_true', help='show atom indexes')
-    parser.add_argument('-zidx', action='store_true', help='show atom indexes')
-    parser.add_argument('-keeph',
+
+    # args.idx is implemented in a slightly hacky way: two different flags
+    # have it as their destination: one sets it to 1, the other to 0, and the
+    # default is None.
+    idx_group = parser.add_mutually_exclusive_group()
+    idx_group.add_argument('--idx',
+                           '-i',
+                           action='store_true',
+                           default=None,
+                           help='show atom indexes (1-based)')
+    idx_group.add_argument('--zidx',
+                           '-z',
+                           dest='idx',
+                           action='store_const',
+                           const=0,
+                           default=None,
+                           help='show atom indexes (0-based)')
+
+    parser.add_argument('--keeph',
+                        '-H',
                         action='store_true',
                         help='keep all hydrogen atoms')
     parser.add_argument('-size', type=int, default=500)
@@ -76,18 +115,13 @@ def get_reader(filename, index=1):
     elif filename.endswith('.csv'):
         return Chem.SmilesMolSupplier(filename, delimiter=',')
     elif filename.endswith('.sdf') or filename.endswith('.mol'):
-        return Chem.SDMolSupplier(filename)
+        return Chem.SDMolSupplier(filename, removeHs=False)
     elif filename.endswith('.mae'):
-        return Chem.MaeMolSupplier(filename)
+        return Chem.MaeMolSupplier(filename, removeHs=False)
     elif filename.endswith('.maegz') or filename.endswith('.mae.gz'):
-        return Chem.MaeMolSupplier(gzip.open(filename))
+        return Chem.MaeMolSupplier(gzip.open(filename), removeHs=False)
     else:
         sys.exit(f'Unknown file format for {filename}')
-
-
-def add_index_props(mol, from_one: bool):
-    for atom in mol.GetAtoms():
-        atom.SetProp('atomNote', str(atom.GetIdx() + from_one))
 
 
 def main():
@@ -104,13 +138,10 @@ def main():
                 break
             if mol.GetNumAtoms() > MAX_ATOMS:
                 continue
-            if args.idx or args.zidx:
-                add_index_props(mol, args.idx)
-            mol = to_2d(mol, args.keeph)
+            mol = to_2d(mol, args.keeph, args.idx)
             show_structure(mol, args.size, args.idx)
     else:
-        mol = Chem.MolFromSmiles(args.file_or_smiles)
-        rdDepictor.Compute2DCoords(mol)
-        if args.idx or args.zidx:
-            add_index_props(mol, args.idx)
+        mol = Chem.MolFromSmiles(args.file_or_smiles, sanitize=False)
+        Chem.SanitizeMol(mol)
+        mol = to_2d(mol, args.keeph, args.idx)
         show_structure(mol, args.size, args.idx)
