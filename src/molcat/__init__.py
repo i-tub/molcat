@@ -7,16 +7,24 @@ __version__ = '0.1.0'
 
 import argparse
 import base64
-import itertools
 import gzip
+import itertools
+import logging
 import os
+import re
 import sys
+from typing import Iterator, Iterable
 
 from rdkit import Chem
 from rdkit.Chem import rdDepictor
 from rdkit.Chem.Draw import rdMolDraw2D
 
+rdkit_logger = logging.getLogger('rdkit')
+
 MAX_ATOMS = 500
+
+# Y/X shape of the generated image, unless -size_y is specified.
+ASPECT_RATIO = 3 / 5
 
 MolSupplier = Chem.SmilesMolSupplier | Chem.SDMolSupplier | Chem.MaeMolSupplier
 
@@ -32,13 +40,13 @@ def show_image(png_data: bytes) -> None:
     print(flush=True)
 
 
-def show_mol(mol: Chem.Mol, size: int = 300) -> None:
+def show_mol(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> None:
     """
     Draw a molecule to the terminal.
     """
-    d = rdMolDraw2D.MolDraw2DCairo(size, size)
-    opts = d.drawOptions()
-    d.DrawMolecule(mol, opts)
+    d = rdMolDraw2D.MolDraw2DCairo(*size)
+    # opts = d.drawOptions()
+    d.DrawMolecule(mol)
     d.FinishDrawing()
     show_image(d.GetDrawingText())
 
@@ -86,7 +94,7 @@ def get_reader(filename) -> MolSupplier:
     elif filename.endswith('.maegz') or filename.endswith('.mae.gz'):
         return Chem.MaeMolSupplier(gzip.open(filename), removeHs=False)
     else:
-        sys.exit(f'Unknown file format for {filename}')
+        raise ValueError(f'Unknown file format for {filename}')
 
 
 def parse_range(n: str) -> tuple[int, int]:
@@ -103,10 +111,19 @@ def parse_range(n: str) -> tuple[int, int]:
         return start - 1, stop
 
 
+def LogLevel(level_name: str) -> int:
+    try:
+        return getattr(logging, level_name)
+    except AttributeError:
+        raise TypeError(f'Invalid log level: {level_name}')
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('file_or_smiles',
-                        help="structure input file or SMILES string")
+                        nargs='?',
+                        help="structure input file or SMILES strings. "
+                        "If not provided, SMILES will be read from stdin.")
     parser.add_argument(
         '-n',
         default='1',
@@ -137,13 +154,39 @@ def parse_args() -> argparse.Namespace:
                         '-H',
                         action='store_true',
                         help='keep all hydrogen atoms')
-    parser.add_argument('-size', type=int, default=500)
-    return parser.parse_args()
+    parser.add_argument('--size-x', '-x', type=int, default=500)
+    parser.add_argument('--size-y', '-y', type=int, default=None)
+    parser.add_argument('--log-level', type=LogLevel, default=logging.FATAL)
+    args = parser.parse_args()
+    args.size_y = args.size_y or int(args.size_x * ASPECT_RATIO)
+
+    return args
 
 
-def main():
-    args = parse_args()
-    if os.path.isfile(args.file_or_smiles):
+def mols_from_str(line: str, strict: bool = False) -> Iterator[Chem.Mol]:
+    """
+    Split a line on comma or whitespace into SMILES strings, ignoring any that
+    are not valid.
+    """
+    for tok in re.split(r'[,\s]+', line):
+        # We don't sanitize during the initial conversion so we can keep any
+        # graph hydrogens until to_2d decides whether to remove them or not.
+        mol = Chem.MolFromSmiles(tok, sanitize=False)
+        if mol is not None:
+            Chem.SanitizeMol(mol)
+            yield mol
+        elif strict:
+            raise ValueError(f'Invalid SMILES: {tok}')
+
+
+def mols_from_file(file: Iterable[str],
+                   strict: bool = False) -> Iterator[Chem.Mol]:
+    for line in file:
+        yield from mols_from_str(line.strip(), strict)
+
+
+def get_mols(args):
+    if args.file_or_smiles and os.path.isfile(args.file_or_smiles):
         reader = get_reader(args.file_or_smiles)
         if not args.all:
             start, stop = parse_range(args.n)
@@ -151,12 +194,26 @@ def main():
         for mol in reader:
             if not mol or mol.GetNumAtoms() > MAX_ATOMS:
                 continue
-            mol = to_2d(mol, args.keeph, args.idx)
-            show_mol(mol, args.size)
+            yield mol
     else:
-        # We don't sanitize during the initial conversion so we can keep any
-        # graph hydrogens until to_2d decides whether to remove them or not.
-        mol = Chem.MolFromSmiles(args.file_or_smiles, sanitize=False)
-        Chem.SanitizeMol(mol)
-        mol = to_2d(mol, args.keeph, args.idx)
-        show_mol(mol, args.size)
+        # SMILES text mode. This one does not support specifying a range, because
+        # it allows for some sloppiness, just using any "words" that from stdin
+        # or the command line that happen to be valid SMILES.
+        strict = bool(args.file_or_smiles)
+        lines = [args.file_or_smiles] if args.file_or_smiles else sys.stdin
+        yield from mols_from_file(lines, strict)
+
+
+def main():
+    args = parse_args()
+
+    # Capture RDKit warnings
+    rdkit_logger.setLevel(args.log_level)
+    Chem.rdBase.LogToPythonLogger()
+
+    try:
+        for mol in get_mols(args):
+            mol2d = to_2d(mol, args.keeph, args.idx)
+            show_mol(mol2d, (args.size_x, args.size_y))
+    except ValueError as e:
+        sys.exit(e)
