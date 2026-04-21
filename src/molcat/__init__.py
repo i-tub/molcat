@@ -71,6 +71,38 @@ def to_2d(mol: Chem.Mol,
     return mol
 
 
+def get_reader(filename) -> MolSupplier:
+    """
+    Return a Mol supplier for the given filename.
+    """
+    if filename.endswith('.smi'):
+        return Chem.SmilesMolSupplier(filename, titleLine=False)
+    elif filename.endswith('.csv'):
+        return Chem.SmilesMolSupplier(filename, delimiter=',')
+    elif filename.endswith('.sdf') or filename.endswith('.mol'):
+        return Chem.SDMolSupplier(filename, removeHs=False)
+    elif filename.endswith('.mae'):
+        return Chem.MaeMolSupplier(filename, removeHs=False)
+    elif filename.endswith('.maegz') or filename.endswith('.mae.gz'):
+        return Chem.MaeMolSupplier(gzip.open(filename), removeHs=False)
+    else:
+        sys.exit(f'Unknown file format for {filename}')
+
+
+def parse_range(n: str) -> tuple[int, int]:
+    """
+    Parse a range string formated as "<start>-<stop>", but note that the range
+    string follows a start from 1 and an end-inclusive convention, so "1-3"
+    would become `(0, 3)`.
+    """
+    try:
+        start = int(n)
+        return (start - 1, start)
+    except ValueError:
+        start, stop = (int(s) for s in n.split('-'))
+        return start - 1, stop
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('file_or_smiles',
@@ -107,38 +139,6 @@ def parse_args() -> argparse.Namespace:
                         help='keep all hydrogen atoms')
     parser.add_argument('-size', type=int, default=500)
     return parser.parse_args()
-
-
-def parse_range(n: str) -> tuple[int, int]:
-    """
-    Parse a range string formated as "<start>-<stop>", but note that the range
-    string follows a start from 1 and an end-inclusive convention, so "1-3"
-    would become `(0, 3)`.
-    """
-    try:
-        start = int(n)
-        return (start - 1, start)
-    except ValueError:
-        start, stop = (int(s) for s in n.split('-'))
-        return start - 1, stop
-
-
-def get_reader(filename) -> MolSupplier:
-    """
-    Return a Mol supplier for the given filename.
-    """
-    if filename.endswith('.smi'):
-        return Chem.SmilesMolSupplier(filename, titleLine=False)
-    elif filename.endswith('.csv'):
-        return Chem.SmilesMolSupplier(filename, delimiter=',')
-    elif filename.endswith('.sdf') or filename.endswith('.mol'):
-        return Chem.SDMolSupplier(filename, removeHs=False)
-    elif filename.endswith('.mae'):
-        return Chem.MaeMolSupplier(filename, removeHs=False)
-    elif filename.endswith('.maegz') or filename.endswith('.mae.gz'):
-        return Chem.MaeMolSupplier(gzip.open(filename), removeHs=False)
-    else:
-        sys.exit(f'Unknown file format for {filename}')
 
 
 def main():
