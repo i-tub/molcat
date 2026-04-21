@@ -1,6 +1,6 @@
 """
 Display a 2D sketch of a structure, from a SMILES or a file, to a terminal that
-support graphics, such as kitty, iterm, or ghostty.
+support graphics, such as kitty, Ghostty, and iTerm2.
 """
 
 __version__ = '0.1.0'
@@ -154,9 +154,21 @@ def parse_args() -> argparse.Namespace:
                         '-H',
                         action='store_true',
                         help='keep all hydrogen atoms')
-    parser.add_argument('--size-x', '-x', type=int, default=500)
-    parser.add_argument('--size-y', '-y', type=int, default=None)
-    parser.add_argument('--log-level', type=LogLevel, default=logging.FATAL)
+    parser.add_argument('--size-x',
+                        '-x',
+                        type=int,
+                        default=500,
+                        help='X dimension in pixels; default=%(default)s')
+    parser.add_argument(
+        '--size-y',
+        '-y',
+        type=int,
+        default=None,
+        help='X dimension in pixels; default is a function of -x')
+    parser.add_argument('--log-level',
+                        type=LogLevel,
+                        default=logging.FATAL,
+                        help='RDKit log level; default="FATAL"')
     args = parser.parse_args()
     args.size_y = args.size_y or int(args.size_x * ASPECT_RATIO)
 
