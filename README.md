@@ -1,6 +1,6 @@
 ## molcat - print molecules to a graphics terminal
 
-molcat is a utility script that simply read a structure file or SMILES and
+`molcat` is a utility script that simply read a structure file or SMILES and
 shows a 2D sketch of the molecule(s) to the terminal. It requires a terminal
 that supports the graphics protocol used by, among others, kitty, Ghostty, and
 iTerm2.
@@ -23,8 +23,8 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  -n N                  index of structure to display. May be a range ('-n
-                        1-4')
+  -n N                  index of structure to display. May be a range ('-n 1-4')
+                        Default: 1 (only show the first structure in the file)
   --all, -a             show all structures in the file
   --idx, -i             show atom indexes (1-based)
   --zidx, -z            show atom indexes (0-based)

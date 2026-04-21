@@ -118,7 +118,7 @@ def LogLevel(level_name: str) -> int:
         raise TypeError(f'Invalid log level: {level_name}')
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('file_or_smiles',
                         nargs='?',
@@ -127,7 +127,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '-n',
         default='1',
-        help="index of structure to display. May be a range ('-n 1-4')")
+        help="index of structure to display. May be a range ('-n 1-4'). "
+        "Default: 1 (only show the first structure in the file)")
     parser.add_argument('--all',
                         '-a',
                         action='store_true',
@@ -169,7 +170,7 @@ def parse_args() -> argparse.Namespace:
                         type=LogLevel,
                         default=logging.FATAL,
                         help='RDKit log level; default="FATAL"')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.size_y = args.size_y or int(args.size_x * ASPECT_RATIO)
 
     return args
