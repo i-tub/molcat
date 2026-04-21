@@ -1,5 +1,5 @@
 """
-Display a 2D sketch of a structure from SMILES or a file to a terminal that
+Display a 2D sketch of a structure, from a SMILES or a file, to a terminal that
 support graphics, such as kitty, iterm, or ghostty.
 """
 
@@ -7,19 +7,24 @@ __version__ = '0.1.0'
 
 import argparse
 import base64
+import itertools
 import gzip
 import os
 import sys
 
 from rdkit import Chem
-from rdkit.Chem import Draw
 from rdkit.Chem import rdDepictor
 from rdkit.Chem.Draw import rdMolDraw2D
 
 MAX_ATOMS = 500
 
+MolSupplier = Chem.SmilesMolSupplier | Chem.SDMolSupplier | Chem.MaeMolSupplier
 
-def show_image(png_data):
+
+def show_image(png_data: bytes) -> None:
+    """
+    Print a PNG file to the terminal using the Kitty protocol.
+    """
     b64_data = base64.b64encode(png_data)
     # a=T (Transfer & Display), f=100 (PNG), q=2 (No Acks/Gibberish)
     cmd = b'a=T,f=100,q=2'
@@ -27,10 +32,13 @@ def show_image(png_data):
     print(flush=True)
 
 
-def show_structure(mol, size=300, indexes=False):
+def show_mol(mol: Chem.Mol, size: int = 300) -> None:
+    """
+    Draw a molecule to the terminal.
+    """
     d = rdMolDraw2D.MolDraw2DCairo(size, size)
     opts = d.drawOptions()
-    d.DrawMolecule(mol)
+    d.DrawMolecule(mol, opts)
     d.FinishDrawing()
     show_image(d.GetDrawingText())
 
@@ -63,13 +71,13 @@ def to_2d(mol: Chem.Mol,
     return mol
 
 
-def parse_args():
-    parser = argparse.ArgumentParser()
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('file_or_smiles',
                         help="structure input file or SMILES string")
     parser.add_argument(
         '-n',
-        default=1,
+        default='1',
         help="index of structure to display. May be a range ('-n 1-4')")
     parser.add_argument('--all',
                         '-a',
@@ -101,15 +109,24 @@ def parse_args():
     return parser.parse_args()
 
 
-def parse_range(n):
+def parse_range(n: str) -> tuple[int, int]:
+    """
+    Parse a range string formated as "<start>-<stop>", but note that the range
+    string follows a start from 1 and an end-inclusive convention, so "1-3"
+    would become `(0, 3)`.
+    """
     try:
         start = int(n)
-        return start, start
+        return (start - 1, start)
     except ValueError:
-        return (int(s) for s in n.split('-'))
+        start, stop = (int(s) for s in n.split('-'))
+        return start - 1, stop
 
 
-def get_reader(filename, index=1):
+def get_reader(filename) -> MolSupplier:
+    """
+    Return a Mol supplier for the given filename.
+    """
     if filename.endswith('.smi'):
         return Chem.SmilesMolSupplier(filename, titleLine=False)
     elif filename.endswith('.csv'):
@@ -127,21 +144,19 @@ def get_reader(filename, index=1):
 def main():
     args = parse_args()
     if os.path.isfile(args.file_or_smiles):
-        start, end = parse_range(args.n)
         reader = get_reader(args.file_or_smiles)
-        for i, mol in enumerate(reader, 1):
-            if not mol:
-                continue
-            if i < start:
-                continue
-            if i > end and not args.all:
-                break
-            if mol.GetNumAtoms() > MAX_ATOMS:
+        if not args.all:
+            start, stop = parse_range(args.n)
+            reader = itertools.islice(reader, start, stop)
+        for mol in reader:
+            if not mol or mol.GetNumAtoms() > MAX_ATOMS:
                 continue
             mol = to_2d(mol, args.keeph, args.idx)
-            show_structure(mol, args.size, args.idx)
+            show_mol(mol, args.size)
     else:
+        # We don't sanitize during the initial conversion so we can keep any
+        # graph hydrogens until to_2d decides whether to remove them or not.
         mol = Chem.MolFromSmiles(args.file_or_smiles, sanitize=False)
         Chem.SanitizeMol(mol)
         mol = to_2d(mol, args.keeph, args.idx)
-        show_structure(mol, args.size, args.idx)
+        show_mol(mol, args.size)
