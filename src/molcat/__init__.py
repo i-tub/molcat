@@ -3,7 +3,7 @@ Display a 2D sketch of a structure, from a SMILES or a file, to a terminal that
 support graphics, such as kitty, Ghostty, and iTerm2.
 """
 
-__version__ = '0.1.1'
+__version__ = '0.2.0'
 
 import argparse
 import base64
@@ -13,6 +13,9 @@ import logging
 import os
 import re
 import sys
+import termios
+import tty
+from pathlib import Path
 from typing import Any, Iterator, Iterable
 
 from rdkit import Chem
@@ -40,7 +43,7 @@ def show_image(png_data: bytes) -> None:
     print(flush=True)
 
 
-def show_mol(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> None:
+def get_png(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> bytes:
     """
     Draw a molecule to the terminal.
     """
@@ -49,7 +52,58 @@ def show_mol(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> None:
     opts.addStereoAnnotation = True
     d.DrawMolecule(mol)
     d.FinishDrawing()
-    show_image(d.GetDrawingText())
+    return d.GetDrawingText()
+
+
+def show_mol(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> None:
+    """
+    Draw a molecule to the terminal.
+    """
+    show_image(get_png(mol, size))
+
+
+def copy_mol(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> None:
+    """
+    Copy molecule image to the clipboard using kitty protocol.
+    """
+    copy_5522(get_png(mol, size), 'image/png')
+
+
+def copy_5522(data: bytes, mime_type: str) -> None:
+    """
+    Copy a binary object to the clipboard using kitty protocol (OSC 5522).
+    """
+    OSC5522 = b'\033]5522;'
+    ST = b'\033\\'
+    b64_data = base64.b64encode(data)
+    b64_type = base64.b64encode(mime_type.encode('ascii'))
+
+    sys.stdout.buffer.write(OSC5522 + b'type=write' + ST)
+    sys.stdout.buffer.write(OSC5522 + b'type=wdata:mime=' + b64_type + b';' +
+                            b64_data + ST)
+    sys.stdout.buffer.write(OSC5522 + b'type=wdata' + ST)
+    sys.stdout.flush()
+
+    try:
+        with open('/dev/tty', 'rb+', buffering=0) as tty_file:
+            fd = tty_file.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                # Set to raw mode so we don't wait for a newline from the terminal
+                tty.setraw(fd)
+                response = b""
+                while True:
+                    char = tty_file.read(1)
+                    response += char
+                    # Kitty's response ends with the String Terminator
+                    if response.endswith(ST) or response.endswith(b'\a'):
+                        break
+                # Optional: Check 'status=DONE' in response for error handling
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    except (FileNotFoundError, OSError):
+        # Fallback for environments without a TTY (like CI/CD or cron)
+        pass
 
 
 def to_2d(mol: Chem.Mol,
@@ -175,8 +229,18 @@ def parse_args(argv=None) -> argparse.Namespace:
                         type=LogLevel,
                         default=logging.FATAL,
                         help='RDKit log level; default="FATAL"')
+    parser.add_argument('--copy',
+                        '-c',
+                        action='store_true',
+                        help='copy to clipboard')
+    parser.add_argument('--write',
+                        '-w',
+                        metavar='<file.png>',
+                        help='Write to PNG file')
     args = parser.parse_args(argv)
     args.size_y = args.size_y or int(args.size_x * ASPECT_RATIO)
+
+    args.size = (args.size_x, args.size_y)
 
     return args
 
@@ -236,6 +300,11 @@ def main():
     try:
         for mol in get_mols(args):
             mol2d = to_2d(mol, args.keeph, args.idx)
-            show_mol(mol2d, (args.size_x, args.size_y))
+            png_data = get_png(mol2d, args.size)
+            show_image(png_data)
+            if args.copy:
+                copy_5522(png_data, 'image/png')
+            if args.write:
+                Path(args.write).write_bytes(png_data)
     except ValueError as e:
         sys.exit(e)
