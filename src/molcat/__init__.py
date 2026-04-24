@@ -3,7 +3,7 @@ Display a 2D sketch of a structure, from a SMILES or a file, to a terminal that
 support graphics, such as kitty, Ghostty, and iTerm2.
 """
 
-__version__ = '0.1.0'
+__version__ = '0.1.1'
 
 import argparse
 import base64
@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import sys
-from typing import Iterator, Iterable
+from typing import Any, Iterator, Iterable
 
 from rdkit import Chem
 from rdkit.Chem import rdDepictor
@@ -45,7 +45,8 @@ def show_mol(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> None:
     Draw a molecule to the terminal.
     """
     d = rdMolDraw2D.MolDraw2DCairo(*size)
-    # opts = d.drawOptions()
+    opts: Any = d.drawOptions()
+    opts.addStereoAnnotation = True
     d.DrawMolecule(mol)
     d.FinishDrawing()
     show_image(d.GetDrawingText())
@@ -53,7 +54,8 @@ def show_mol(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> None:
 
 def to_2d(mol: Chem.Mol,
           keeph: bool = False,
-          idx: int | None = None) -> Chem.Mol:
+          idx: int | None = None,
+          cleanIt: bool = True) -> Chem.Mol:
     """
     Return a modified copy of mol with 2D coordinates added, and depending on
     flags, hydrogens removed and indices added as atomNote properties. The notes
@@ -70,12 +72,10 @@ def to_2d(mol: Chem.Mol,
             atom.SetProp('atomNote', str(atom.GetIdx() + idx))
     if not keeph:
         mol = Chem.RemoveHs(mol)
-        for bond in mol.GetBonds():
-            bond.SetBondDir(Chem.BondDir.NONE)
-        Chem.AssignStereochemistryFrom3D(mol)
-        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+        Chem.AssignStereochemistry(mol, cleanIt=cleanIt, force=True)
 
     rdDepictor.Compute2DCoords(mol)
+    Chem.Kekulize(mol, True)
     return mol
 
 
@@ -166,6 +166,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=int,
         default=None,
         help='X dimension in pixels; default is a function of -x')
+    parser.add_argument(
+        '--min-atoms',
+        type=int,
+        default=1,
+        help='only display molecules with at least this many atoms')
     parser.add_argument('--log-level',
                         type=LogLevel,
                         default=logging.FATAL,
@@ -176,26 +181,30 @@ def parse_args(argv=None) -> argparse.Namespace:
     return args
 
 
-def mols_from_str(line: str, strict: bool = False) -> Iterator[Chem.Mol]:
+def mols_from_str(line: str,
+                  strict: bool = False,
+                  min_atoms: int = 1) -> Iterator[Chem.Mol]:
     """
     Split a line on comma or whitespace into SMILES strings, ignoring any that
     are not valid.
     """
-    for tok in re.split(r'[,\s]+', line):
+    for tok in re.split(r'''[,\s"']+''', line):
         # We don't sanitize during the initial conversion so we can keep any
         # graph hydrogens until to_2d decides whether to remove them or not.
         mol = Chem.MolFromSmiles(tok, sanitize=False)
         if mol is not None:
-            Chem.SanitizeMol(mol)
-            yield mol
+            if mol.GetNumAtoms() >= min_atoms:
+                Chem.SanitizeMol(mol)
+                yield mol
         elif strict:
             raise ValueError(f'Invalid SMILES: {tok}')
 
 
 def mols_from_file(file: Iterable[str],
-                   strict: bool = False) -> Iterator[Chem.Mol]:
+                   strict: bool = False,
+                   min_atoms: int = 1) -> Iterator[Chem.Mol]:
     for line in file:
-        yield from mols_from_str(line.strip(), strict)
+        yield from mols_from_str(line.strip(), strict, min_atoms)
 
 
 def get_mols(args):
@@ -214,7 +223,7 @@ def get_mols(args):
         # or the command line that happen to be valid SMILES.
         strict = bool(args.file_or_smiles)
         lines = [args.file_or_smiles] if args.file_or_smiles else sys.stdin
-        yield from mols_from_file(lines, strict)
+        yield from mols_from_file(lines, strict, args.min_atoms)
 
 
 def main():
