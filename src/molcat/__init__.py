@@ -133,7 +133,7 @@ def to_2d(mol: Chem.Mol,
     return mol
 
 
-def get_reader(filename) -> MolSupplier:
+def get_reader(filename, removeHs=False) -> MolSupplier:
     """
     Return a Mol supplier for the given filename.
     """
@@ -142,11 +142,11 @@ def get_reader(filename) -> MolSupplier:
     elif filename.endswith('.csv'):
         return Chem.SmilesMolSupplier(filename, delimiter=',')
     elif filename.endswith('.sdf') or filename.endswith('.mol'):
-        return Chem.SDMolSupplier(filename, removeHs=False)
+        return Chem.SDMolSupplier(filename, removeHs=removeHs)
     elif filename.endswith('.mae'):
-        return Chem.MaeMolSupplier(filename, removeHs=False)
+        return Chem.MaeMolSupplier(filename, removeHs=removeHs)
     elif filename.endswith('.maegz') or filename.endswith('.mae.gz'):
-        return Chem.MaeMolSupplier(gzip.open(filename), removeHs=False)
+        return Chem.MaeMolSupplier(gzip.open(filename), removeHs=removeHs)
     else:
         raise ValueError(f'Unknown file format for {filename}')
 
