@@ -1,12 +1,14 @@
 """
 Display a 2D sketch of a structure, from a SMILES or a file, to a terminal that
-support graphics, such as kitty, Ghostty, and iTerm2.
+supports graphics, such as kitty, Ghostty, and iTerm2.
 """
 
 __version__ = '0.2.0'
 
+import array
 import argparse
 import base64
+import fcntl
 import gzip
 import itertools
 import logging
@@ -29,7 +31,23 @@ MAX_ATOMS = 500
 # Y/X shape of the generated image, unless -size_y is specified.
 ASPECT_RATIO = 3 / 5
 
+# By default, use image width of DEFAULT_REL_X * window_width
+DEFAULT_REL_X = 0.8
+
+# Size to use by default if we can't determine window width.
+DEFAULT_SIZE = (500, 300)
+
 MolSupplier = Chem.SmilesMolSupplier | Chem.SDMolSupplier | Chem.MaeMolSupplier
+
+
+def get_window_size():
+    """
+    Return the window size (width, height) in pixels.
+    """
+    buf = array.array('H', [0, 0, 0, 0])
+    fcntl.ioctl(sys.stdout, termios.TIOCGWINSZ, buf)
+    _, _, width, height = buf
+    return width, height
 
 
 def show_image(png_data: bytes) -> None:
@@ -43,7 +61,7 @@ def show_image(png_data: bytes) -> None:
     print(flush=True)
 
 
-def get_png(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> bytes:
+def get_png(mol: Chem.Mol, size: tuple[int, int] = DEFAULT_SIZE) -> bytes:
     """
     Draw a molecule to the terminal.
     """
@@ -55,14 +73,14 @@ def get_png(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> bytes:
     return d.GetDrawingText()
 
 
-def show_mol(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> None:
+def show_mol(mol: Chem.Mol, size: tuple[int, int] = DEFAULT_SIZE) -> None:
     """
     Draw a molecule to the terminal.
     """
     show_image(get_png(mol, size))
 
 
-def copy_mol(mol: Chem.Mol, size: tuple[int, int] = (500, 300)) -> None:
+def copy_mol(mol: Chem.Mol, size: tuple[int, int] = DEFAULT_SIZE) -> None:
     """
     Copy molecule image to the clipboard using kitty protocol.
     """
@@ -209,11 +227,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                         '-H',
                         action='store_true',
                         help='keep all hydrogen atoms')
-    parser.add_argument('--size-x',
-                        '-x',
-                        type=int,
-                        default=500,
-                        help='X dimension in pixels; default=%(default)s')
+    parser.add_argument(
+        '--size-x',
+        '-x',
+        type=int,
+        help='X dimension in pixels; default: determine automatically')
     parser.add_argument(
         '--size-y',
         '-y',
@@ -238,9 +256,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                         metavar='<file.png>',
                         help='Write to PNG file')
     args = parser.parse_args(argv)
-    args.size_y = args.size_y or int(args.size_x * ASPECT_RATIO)
-
-    args.size = (args.size_x, args.size_y)
 
     return args
 
@@ -290,8 +305,31 @@ def get_mols(args):
         yield from mols_from_file(lines, strict, args.min_atoms)
 
 
+def determine_size(x: int = 0, y: int = 0):
+    """
+    Determine size for images. If only one of x or y is provided, apply the
+    default aspect ratio. If neither is provided, determine the size
+    automatically based on the window width.
+    """
+    if x and y:
+        return x, y
+    elif x and not y:
+        return x, int(x * ASPECT_RATIO)
+    elif y and not x:
+        return int(y / ASPECT_RATIO), y
+    else:
+        x, _ = get_window_size()
+        if x:
+            x = int(x * DEFAULT_REL_X)
+            return int(x), int(x * ASPECT_RATIO)
+        else:
+            return DEFAULT_SIZE
+
+
 def main():
     args = parse_args()
+
+    size = determine_size(args.size_x, args.size_y)
 
     # Capture RDKit warnings
     rdkit_logger.setLevel(args.log_level)
@@ -300,7 +338,7 @@ def main():
     try:
         for mol in get_mols(args):
             mol2d = to_2d(mol, args.keeph, args.idx)
-            png_data = get_png(mol2d, args.size)
+            png_data = get_png(mol2d, size)
             show_image(png_data)
             if args.copy:
                 copy_5522(png_data, 'image/png')
