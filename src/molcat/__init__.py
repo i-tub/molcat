@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Iterator, Iterable
 
 from rdkit import Chem
+from rdkit.Chem import Draw
 from rdkit.Chem import rdDepictor
 from rdkit.Chem.Draw import rdMolDraw2D
 
@@ -50,10 +51,34 @@ def get_window_size():
     return width, height
 
 
+def _chunk(data, chunk_size=2048):
+    size = len(data)
+    for start in range(0, size, chunk_size):
+        chunk = data[start:start + chunk_size]
+        last = start + chunk_size >= size
+        yield chunk, last
+
+
+def _show_image_chunked(png_data: bytes) -> None:
+    """
+    Print a PNG file to the terminal using the Kitty protocol.
+    """
+    b64_data = base64.b64encode(png_data)
+    # a=T (Transfer & Display), f=100 (PNG), q=2 (No Acks/Gibberish)
+    cmd = b'a=T,f=100,q=2,m='
+    for chunk, last in _chunk(b64_data):
+        flag = b'0' if last else b'1'
+        sys.stdout.buffer.write(b'\033_G' + cmd + flag + b';' + chunk +
+                                b'\033\\')
+    print(flush=True)
+
+
 def show_image(png_data: bytes) -> None:
     """
     Print a PNG file to the terminal using the Kitty protocol.
     """
+    if 'kitty' in os.environ.get('TERM', ''):
+        return _show_image_chunked(png_data)
     b64_data = base64.b64encode(png_data)
     # a=T (Transfer & Display), f=100 (PNG), q=2 (No Acks/Gibberish)
     cmd = b'a=T,f=100,q=2'
@@ -71,6 +96,26 @@ def get_png(mol: Chem.Mol, size: tuple[int, int] = DEFAULT_SIZE) -> bytes:
     d.DrawMolecule(mol)
     d.FinishDrawing()
     return d.GetDrawingText()
+
+
+def get_thumbnails_png(mols,
+                       cols: int,
+                       thumbnail_size: tuple[int, int],
+                       legend_prop: str = 'index'):
+
+    mols = list(mols)
+    if legend_prop != 'none':
+        legends = [
+            mol.GetProp(legend_prop) if mol.HasProp(legend_prop) else ''
+            for mol in mols
+        ]
+    else:
+        legends = None
+    return Draw.MolsToGridImage(mols,
+                                returnPNG=True,
+                                molsPerRow=cols,
+                                subImgSize=thumbnail_size,
+                                legends=legends)
 
 
 def show_mol(mol: Chem.Mol, size: tuple[int, int] = DEFAULT_SIZE) -> None:
@@ -97,8 +142,9 @@ def copy_5522(data: bytes, mime_type: str) -> None:
     b64_type = base64.b64encode(mime_type.encode('ascii'))
 
     sys.stdout.buffer.write(OSC5522 + b'type=write' + ST)
-    sys.stdout.buffer.write(OSC5522 + b'type=wdata:mime=' + b64_type + b';' +
-                            b64_data + ST)
+    for chunk, _ in _chunk(b64_data):
+        sys.stdout.buffer.write(OSC5522 + b'type=wdata:mime=' + b64_type +
+                                b';' + chunk + ST)
     sys.stdout.buffer.write(OSC5522 + b'type=wdata' + ST)
     sys.stdout.flush()
 
@@ -238,6 +284,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=int,
         default=None,
         help='X dimension in pixels; default is a function of -x')
+    parser.add_argument('--cols', type=int, help='number of columns to use')
+    parser.add_argument(
+        '--legend',
+        default='index',
+        help='legend to use when using --cols. Default="index". Mol name is '
+        'shown with "name" or "title". Anything else is a property.')
     parser.add_argument(
         '--min-atoms',
         type=int,
@@ -256,6 +308,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         metavar='<file.png>',
                         help='Write to PNG file')
     args = parser.parse_args(argv)
+    if args.legend in ('name', 'title'):
+        args.legend = '_Name'
 
     return args
 
@@ -289,17 +343,20 @@ def mols_from_file(file: Iterable[str],
 def get_mols(args):
     if args.file_or_smiles and os.path.isfile(args.file_or_smiles):
         reader = get_reader(args.file_or_smiles)
-        if not args.all:
+        if args.all:
+            start = 0
+        else:
             start, stop = parse_range(args.n)
             reader = itertools.islice(reader, start, stop)
-        for mol in reader:
+        for i, mol in enumerate(reader, start + 1):
             if not mol or mol.GetNumAtoms() > MAX_ATOMS:
                 continue
+            mol.SetIntProp('index', i)
             yield mol
     else:
-        # SMILES text mode. This one does not support specifying a range, because
-        # it allows for some sloppiness, just using any "words" that from stdin
-        # or the command line that happen to be valid SMILES.
+        # SMILES text mode. This one does not support specifying a range,
+        # because it allows for some sloppiness, just using any "words" that
+        # from stdin or the command line that happen to be valid SMILES.
         strict = bool(args.file_or_smiles)
         lines = [args.file_or_smiles] if args.file_or_smiles else sys.stdin
         yield from mols_from_file(lines, strict, args.min_atoms)
@@ -329,20 +386,28 @@ def determine_size(x: int = 0, y: int = 0):
 def main():
     args = parse_args()
 
-    size = determine_size(args.size_x, args.size_y)
-
     # Capture RDKit warnings
     rdkit_logger.setLevel(args.log_level)
     Chem.rdBase.LogToPythonLogger()
 
     try:
-        for mol in get_mols(args):
-            mol2d = to_2d(mol, args.keeph, args.idx)
-            png_data = get_png(mol2d, size)
+        mols = get_mols(args)
+        mols2d = (to_2d(mol, args.keeph, args.idx) for mol in mols)
+        if args.cols:
+            x = args.size_x or get_window_size()[0] or DEFAULT_SIZE[0]
+            thumbnail_size = (int(x / args.cols),
+                              int(x / args.cols * ASPECT_RATIO))
+            png_data = get_thumbnails_png(mols2d, args.cols, thumbnail_size,
+                                          args.legend)
             show_image(png_data)
-            if args.copy:
-                copy_5522(png_data, 'image/png')
-            if args.write:
-                Path(args.write).write_bytes(png_data)
+        else:
+            size = determine_size(args.size_x, args.size_y)
+            for mol in mols2d:
+                png_data = get_png(mol, size)
+                show_image(png_data)
+        if args.copy:
+            copy_5522(png_data, 'image/png')
+        if args.write:
+            Path(args.write).write_bytes(png_data)
     except ValueError as e:
         sys.exit(e)
