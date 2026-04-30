@@ -3,7 +3,7 @@ Display a 2D sketch of a structure, from a SMILES or a file, to a terminal that
 supports graphics, such as kitty, Ghostty, and iTerm2.
 """
 
-__version__ = '0.2.0'
+__version__ = '0.3.0'
 
 import array
 import argparse
